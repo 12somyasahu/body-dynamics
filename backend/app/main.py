@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import asyncio
 
 from app.realtime.session import LiveSession
+from app.processing.pose_stub import PoseEstimatorStub
 
 app = FastAPI(title="Body Dynamics")
 
@@ -15,42 +16,45 @@ def health():
 async def ws_live(websocket: WebSocket):
     await websocket.accept()
 
-    # One session per connection
+    
     session = LiveSession(buffer_size=30)
+    estimator = PoseEstimatorStub()
 
     async def processing_loop():
-        """
-        This runs independently of the WebSocket receive loop.
-        Later: ML, pose, tracking will live here.
-        """
         while True:
             frame = await session.frame_buffer.pop()
             if frame is None:
                 await asyncio.sleep(0.005)
                 continue
 
-            # Placeholder for processing (ML later)
+            # Fake pose estimation
+            pose = estimator.estimate(frame)
             await session.on_processed()
 
-    # Start background processing task
-    processor = asyncio.create_task(processing_loop())
+            # SEND POSE DATA
+            await websocket.send_json({
+                "type": "pose",
+                "keypoints": pose
+            })
+
+    processor_task = asyncio.create_task(processing_loop())
 
     try:
         while True:
             message = await websocket.receive()
 
-            # TEXT control messages
+            # TEXT messages (debug)
             if "text" in message:
                 await websocket.send_json({
                     "type": "text_ack",
                     "message": message["text"]
                 })
 
-            # BINARY frame messages
+            # BINARY messages (video frames)
             elif "bytes" in message:
                 await session.on_frame(message["bytes"])
 
-                # Send lightweight stats periodically
+                # SEND STATS every 10 frames
                 if session.frames_received % 10 == 0:
                     await websocket.send_json({
                         "type": "stats",
@@ -61,4 +65,4 @@ async def ws_live(websocket: WebSocket):
         print("WebSocket disconnected")
 
     finally:
-        processor.cancel()
+        processor_task.cancel()

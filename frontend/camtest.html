@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Body Dynamics – Live Pose Test</title>
+
+  <style>
+    body {
+      background: #111;
+      color: #0f0;
+      font-family: monospace;
+      padding: 20px;
+    }
+
+    #container {
+      position: relative;
+      width: 640px;
+      height: 480px;
+      border: 2px solid #0f0;
+    }
+
+    video, canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 640px;
+      height: 480px;
+    }
+
+    #stats {
+      margin-top: 10px;
+      white-space: pre;
+    }
+  </style>
+</head>
+
+<body>
+
+<h2>Body Dynamics – Live Camera Test</h2>
+
+<div id="container">
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<div id="stats">Waiting for data…</div>
+
+<script>
+/* =======================
+   DOM ELEMENTS
+======================= */
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const statsBox = document.getElementById("stats");
+
+/* =======================
+   STATE
+======================= */
+let latestPose = null;
+let lastStats = null;
+
+/* =======================
+   WEBSOCKET
+======================= */
+const ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
+ws.binaryType = "arraybuffer";
+
+ws.onopen = () => {
+  console.log("[WS] connected");
+};
+
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+
+  if (msg.type === "pose") {
+    latestPose = msg.keypoints;
+    console.log("[POSE]", latestPose);
+  }
+
+  if (msg.type === "stats") {
+    lastStats = msg;
+    console.log("[STATS]", msg);
+    statsBox.textContent = JSON.stringify(msg, null, 2);
+  }
+};
+
+ws.onerror = (e) => console.error("[WS ERROR]", e);
+
+/* =======================
+   CAMERA
+======================= */
+navigator.mediaDevices.getUserMedia({ video: true })
+  .then(stream => {
+    video.srcObject = stream;
+
+    video.onloadedmetadata = () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      setInterval(sendFrame, 100); // ~10 FPS
+      requestAnimationFrame(render);
+    };
+  })
+  .catch(err => {
+    console.error("Camera error:", err);
+  });
+
+/* =======================
+   SEND FRAME TO BACKEND
+======================= */
+function sendFrame() {
+  if (ws.readyState !== WebSocket.OPEN) return;
+
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  canvas.toBlob(blob => {
+    if (!blob) return;
+    blob.arrayBuffer().then(buf => ws.send(buf));
+  }, "image/jpeg", 0.6);
+}
+
+/* =======================
+   RENDER LOOP
+======================= */
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // draw video
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  // draw pose points
+  if (latestPose && latestPose.person_0) {
+    ctx.fillStyle = "red";
+
+    latestPose.person_0.forEach(([x, y]) => {
+      const px = x * canvas.width;
+      const py = y * canvas.height;
+
+      ctx.beginPath();
+      ctx.arc(px, py, 6, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  // draw FPS overlay
+  if (lastStats) {
+    ctx.fillStyle = "lime";
+    ctx.font = "16px monospace";
+    ctx.fillText(`FPS: ${lastStats.input_fps}`, 10, 20);
+  }
+
+  requestAnimationFrame(render);
+}
+</script>
+
+</body>
+</html>
