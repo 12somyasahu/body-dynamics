@@ -110,4 +110,4 @@ async def ws_live(websocket: WebSocket):
                 })
 
     except WebSocketDisconnect:
-        print("WebSocket disconnected cleanly")
+        print("WebSocket disconnected cleanly LEss go")
