@@ -1,22 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Body Dynamics – Live Pose Test</title>
+  <meta charset="UTF-8" />
+  <title>Body Dynamics – Live Pose</title>
 
   <style>
     body {
-      background: #111;
-      color: #0f0;
-      font-family: monospace;
+      margin: 0;
       padding: 20px;
+      background: #0d0d0d;
+      color: #00ff9c;
+      font-family: monospace;
     }
 
-    #container {
+    h2 {
+      margin-bottom: 10px;
+    }
+
+    #stage {
       position: relative;
       width: 640px;
       height: 480px;
-      border: 2px solid #0f0;
+      border: 2px solid #00ff9c;
+      background: black;
     }
 
     video, canvas {
@@ -29,6 +35,9 @@
 
     #stats {
       margin-top: 10px;
+      padding: 10px;
+      background: #111;
+      border: 1px solid #00ff9c;
       white-space: pre;
     }
   </style>
@@ -36,42 +45,48 @@
 
 <body>
 
-<h2>Body Dynamics – Live Camera Test</h2>
+<h2>Body Dynamics — Live Pose Test</h2>
 
-<div id="container">
-  <video id="video" autoplay playsinline></video>
+<div id="stage">
+  <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
 </div>
 
-<div id="stats">Waiting for data…</div>
+<div id="stats">Waiting for WebSocket…</div>
 
 <script>
-/* =======================
-   DOM ELEMENTS
-======================= */
+/* =========================
+   DOM & STATE
+========================= */
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const statsBox = document.getElementById("stats");
 
-/* =======================
-   STATE
-======================= */
 let latestPose = null;
 let lastStats = null;
 
-/* =======================
+/* =========================
    WEBSOCKET
-======================= */
+========================= */
 const ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
 ws.binaryType = "arraybuffer";
 
 ws.onopen = () => {
-  console.log("[WS] connected");
+  console.log("[WS] CONNECTED");
+  statsBox.textContent = "WebSocket connected.\nWaiting for data…";
 };
 
-ws.onmessage = (e) => {
-  const msg = JSON.parse(e.data);
+ws.onmessage = (event) => {
+  console.log("[WS RAW]", event.data);
+
+  let msg;
+  try {
+    msg = JSON.parse(event.data);
+  } catch (e) {
+    console.error("Invalid JSON from server:", event.data);
+    return;
+  }
 
   if (msg.type === "pose") {
     latestPose = msg.keypoints;
@@ -86,10 +101,11 @@ ws.onmessage = (e) => {
 };
 
 ws.onerror = (e) => console.error("[WS ERROR]", e);
+ws.onclose = () => console.warn("[WS CLOSED]");
 
-/* =======================
+/* =========================
    CAMERA
-======================= */
+========================= */
 navigator.mediaDevices.getUserMedia({ video: true })
   .then(stream => {
     video.srcObject = stream;
@@ -98,31 +114,31 @@ navigator.mediaDevices.getUserMedia({ video: true })
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
 
-      setInterval(sendFrame, 100); // ~10 FPS
-      requestAnimationFrame(render);
+      setInterval(sendFrame, 100);     // send frames ~10 FPS
+      requestAnimationFrame(render);   // draw loop
     };
   })
   .catch(err => {
     console.error("Camera error:", err);
+    statsBox.textContent = "Camera permission denied.";
   });
 
-/* =======================
-   SEND FRAME TO BACKEND
-======================= */
+/* =========================
+   SEND FRAME
+========================= */
 function sendFrame() {
   if (ws.readyState !== WebSocket.OPEN) return;
 
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
   canvas.toBlob(blob => {
     if (!blob) return;
     blob.arrayBuffer().then(buf => ws.send(buf));
   }, "image/jpeg", 0.6);
 }
 
-/* =======================
+/* =========================
    RENDER LOOP
-======================= */
+========================= */
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -131,8 +147,7 @@ function render() {
 
   // draw pose points
   if (latestPose && latestPose.person_0) {
-    ctx.fillStyle = "red";
-
+    ctx.fillStyle = "#ff003c";
     latestPose.person_0.forEach(([x, y]) => {
       const px = x * canvas.width;
       const py = y * canvas.height;
@@ -143,9 +158,9 @@ function render() {
     });
   }
 
-  // draw FPS overlay
+  // FPS overlay
   if (lastStats) {
-    ctx.fillStyle = "lime";
+    ctx.fillStyle = "#00ff9c";
     ctx.font = "16px monospace";
     ctx.fillText(`FPS: ${lastStats.input_fps}`, 10, 20);
   }

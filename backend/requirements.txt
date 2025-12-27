@@ -6,3 +6,10 @@ opencv-python==4.9.0.80
 mediapipe==0.10.9
 
 pydantic==2.6.4
+fastapi
+uvicorn[standard]
+websockets
+opencv-python
+mediapipe
+numpy
+python-multipart
