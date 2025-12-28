@@ -1,8 +1,10 @@
 #os                   #this is gitignore no one will read this 
 .DS_Store
 Thumbs.db
+# Python virtual environment
+venv/
 
-#pyhon
+#python
 __pycache__/
 *.pyc
 *.pyo
