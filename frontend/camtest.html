@@ -13,10 +13,6 @@
       font-family: monospace;
     }
 
-    h2 {
-      margin-bottom: 10px;
-    }
-
     #stage {
       position: relative;
       width: 640px;
@@ -67,41 +63,46 @@ let latestPose = null;
 let lastStats = null;
 
 /* =========================
+   SKELETON DEFINITIONS
+========================= */
+const DRAW_POINTS = new Set([
+  0, 11, 12, 13, 14, 15, 16,
+  23, 24, 25, 26, 27, 28, 31, 32
+]);
+
+const SKELETON = [
+  [0, 11], [0, 12],
+  [11, 12],
+  [11, 23], [12, 24],
+  [23, 24],
+  [11, 13], [13, 15],
+  [12, 14], [14, 16],
+  [23, 25], [25, 27], [27, 31],
+  [24, 26], [26, 28], [28, 32]
+];
+
+/* =========================
    WEBSOCKET
 ========================= */
 const ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
 ws.binaryType = "arraybuffer";
 
 ws.onopen = () => {
-  console.log("[WS] CONNECTED");
   statsBox.textContent = "WebSocket connected.\nWaiting for data…";
 };
 
 ws.onmessage = (event) => {
-  console.log("[WS RAW]", event.data);
-
-  let msg;
-  try {
-    msg = JSON.parse(event.data);
-  } catch (e) {
-    console.error("Invalid JSON from server:", event.data);
-    return;
-  }
+  const msg = JSON.parse(event.data);
 
   if (msg.type === "pose") {
     latestPose = msg.keypoints;
-    console.log("[POSE]", latestPose);
   }
 
   if (msg.type === "stats") {
     lastStats = msg;
-    console.log("[STATS]", msg);
     statsBox.textContent = JSON.stringify(msg, null, 2);
   }
 };
-
-ws.onerror = (e) => console.error("[WS ERROR]", e);
-ws.onclose = () => console.warn("[WS CLOSED]");
 
 /* =========================
    CAMERA
@@ -109,18 +110,12 @@ ws.onclose = () => console.warn("[WS CLOSED]");
 navigator.mediaDevices.getUserMedia({ video: true })
   .then(stream => {
     video.srcObject = stream;
-
     video.onloadedmetadata = () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-
-      setInterval(sendFrame, 100);     // send frames ~10 FPS
-      requestAnimationFrame(render);   // draw loop
+      setInterval(sendFrame, 100);
+      requestAnimationFrame(render);
     };
-  })
-  .catch(err => {
-    console.error("Camera error:", err);
-    statsBox.textContent = "Camera permission denied.";
   });
 
 /* =========================
@@ -137,28 +132,44 @@ function sendFrame() {
 }
 
 /* =========================
+   DRAW FUNCTIONS
+========================= */
+function drawSkeleton(points) {
+  ctx.strokeStyle = "#00b3ff";
+  ctx.lineWidth = 3;
+
+  SKELETON.forEach(([a, b]) => {
+    if (!points[a] || !points[b]) return;
+
+    ctx.beginPath();
+    ctx.moveTo(points[a][0] * canvas.width, points[a][1] * canvas.height);
+    ctx.lineTo(points[b][0] * canvas.width, points[b][1] * canvas.height);
+    ctx.stroke();
+  });
+}
+
+function drawPoints(points) {
+  ctx.fillStyle = "#ff003c";
+  points.forEach((p, i) => {
+    if (!DRAW_POINTS.has(i)) return;
+    ctx.beginPath();
+    ctx.arc(p[0] * canvas.width, p[1] * canvas.height, 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+/* =========================
    RENDER LOOP
 ========================= */
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  // draw video
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  // draw pose points
   if (latestPose && latestPose.person_0) {
-    ctx.fillStyle = "#ff003c";
-    latestPose.person_0.forEach(([x, y]) => {
-      const px = x * canvas.width;
-      const py = y * canvas.height;
-
-      ctx.beginPath();
-      ctx.arc(px, py, 6, 0, Math.PI * 2);
-      ctx.fill();
-    });
+    drawSkeleton(latestPose.person_0);
+    drawPoints(latestPose.person_0);
   }
 
-  // FPS overlay
   if (lastStats) {
     ctx.fillStyle = "#00ff9c";
     ctx.font = "16px monospace";
