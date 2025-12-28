@@ -10,7 +10,7 @@ from fastapi.websockets import WebSocketDisconnect
 from app.processing.stats import angle_between
 
 # =========================
-# App setup
+# App setup this is sober
 # =========================
 app = FastAPI()
 
