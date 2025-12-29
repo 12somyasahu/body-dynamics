@@ -177,6 +177,22 @@ function render() {
   }
 
   requestAnimationFrame(render);
+  // Draw Center of Mass (COM)
+if (lastStats && lastStats.com) {
+  const [cx, cy] = lastStats.com;
+
+  const x = cx * canvas.width;
+  const y = cy * canvas.height;
+
+  ctx.fillStyle = "#ffd500"; // yellow
+  ctx.beginPath();
+  ctx.arc(x, y, 8, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.font = "14px monospace";
+  ctx.fillText("COM", x + 10, y);
+}
+
 }
 </script>
 
