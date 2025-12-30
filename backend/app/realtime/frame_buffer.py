@@ -1,27 +1,36 @@
 import asyncio
-from collections import deque
 from typing import Optional
 
 
 class FrameBuffer:
-   
-    def __init__(self, max_size: int = 30):
-        self.buffer = deque(maxlen=max_size)
-        self.lock = asyncio.Lock()
+    """
+    Realtime frame buffer.
+    Always stores ONLY the latest frame.
+    Older frames are discarded automatically.
+    """
+
+    def __init__(self):
+        self._frame: Optional[bytes] = None
+        self._lock = asyncio.Lock()
 
     async def push(self, frame: bytes) -> None:
-       
-        async with self.lock:
-            self.buffer.append(frame)
+        """
+        Store the latest frame.
+        Overwrites any previous frame.
+        """
+        async with self._lock:
+            self._frame = frame
 
     async def pop(self) -> Optional[bytes]:
-       
-        async with self.lock:
-            if not self.buffer:
-                return None
-            return self.buffer.popleft()
+        """
+        Retrieve and clear the latest frame.
+        Returns None if no frame is available.
+        """
+        async with self._lock:
+            frame = self._frame
+            self._frame = None
+            return frame
 
-    async def size(self) -> int:
-        """Current buffer size."""
-        async with self.lock:
-            return len(self.buffer)
+    async def has_frame(self) -> bool:
+        async with self._lock:
+            return self._frame is not None

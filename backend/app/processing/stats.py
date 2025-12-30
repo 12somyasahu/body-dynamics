@@ -1,5 +1,5 @@
 import math
-
+import numpy as np
 
 # ----------------------------
 # ANGLE UTILITY
@@ -67,3 +67,74 @@ def compute_com(keypoints):
 
     except Exception:
         return None
+  
+
+
+class KalmanCOM:
+    """
+    2D Kalman Filter for Center of Mass tracking.
+    State: [x, y, vx, vy]
+    """
+
+    def __init__(self):
+        # State vector
+        self.x = np.zeros((4, 1))
+
+        # State covariance
+        self.P = np.eye(4) * 1.0
+
+        # State transition matrix
+        self.F = np.array([
+            [1, 0, 1, 0],
+            [0, 1, 0, 1],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ])
+
+        # Measurement matrix (we observe x, y)
+        self.H = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ])
+
+        # Measurement noise
+        self.R = np.eye(2) * 0.01
+
+        # Process noise
+        self.Q = np.eye(4) * 0.001
+
+        self.initialized = False
+
+    def update(self, measurement):
+        """
+        measurement: (x, y) tuple
+        returns: (x, y) filtered
+        """
+
+        z = np.array([[measurement[0]], [measurement[1]]])
+
+        # Initialize state
+        if not self.initialized:
+            self.x[0, 0] = measurement[0]
+            self.x[1, 0] = measurement[1]
+            self.initialized = True
+            return measurement
+
+        # ----------------
+        # Predict
+        # ----------------
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+
+        # ----------------
+        # Update
+        # ----------------
+        y = z - (self.H @ self.x)
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+
+        self.x = self.x + K @ y
+        self.P = (np.eye(4) - K @ self.H) @ self.P
+
+        return (self.x[0, 0], self.x[1, 0])
+
