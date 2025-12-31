@@ -109,6 +109,7 @@ class KalmanCOM:
         """
         measurement: (x, y) tuple
         returns: (x, y) filtered
+        stats ka satta
         """
 
         z = np.array([[measurement[0]], [measurement[1]]])

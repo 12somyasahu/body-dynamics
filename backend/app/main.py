@@ -13,7 +13,7 @@ from app.realtime.frame_buffer import FrameBuffer
 
 
 # -----------------------------
-# App setup
+# App setup 
 # -----------------------------
 app = FastAPI()
 
@@ -34,7 +34,7 @@ async def health():
 
 
 # -----------------------------
-# CPU-heavy inference (SYNC)
+# CPU-heavy inference (SYNC) vroom vroom
 # -----------------------------
 def process_frame_sync(frame_bytes, pose_estimator, kalman):
     np_arr = np.frombuffer(frame_bytes, np.uint8)
@@ -66,7 +66,7 @@ def process_frame_sync(frame_bytes, pose_estimator, kalman):
 
 
 # -----------------------------
-# WebSocket
+# WebSocket clickety-clackety
 # -----------------------------
 @app.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket):
@@ -146,7 +146,7 @@ async def websocket_live(websocket: WebSocket):
             prev_time = now
 
             # -----------------------------
-            # Weight transfer
+            # Weight transfer heavy stuff
             # -----------------------------
             weight_shift = "centered"
 
@@ -183,7 +183,7 @@ async def websocket_live(websocket: WebSocket):
                 weight_hold_start = None
 
             # -----------------------------
-            # Stability
+            # Stability its all about stability hehe
             # -----------------------------
             stability = None
             if speed is not None:

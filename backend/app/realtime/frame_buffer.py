@@ -17,6 +17,7 @@ class FrameBuffer:
         """
         Store the latest frame.
         Overwrites any previous frame.
+        thats how we do itttt
         """
         async with self._lock:
             self._frame = frame
