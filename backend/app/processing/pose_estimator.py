@@ -2,7 +2,7 @@ import cv2
 import mediapipe as mp
 
 
-class PoseEstimatorStub:
+class PoseEstimator:
     """
     Pose estimator using MediaPipe.
     Returns normalized keypoints: [ [x, y], ... ]

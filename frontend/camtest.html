@@ -35,67 +35,113 @@
       background: #111;
       border: 1px solid #00ff9c;
       white-space: pre;
+      font-size: 13px;
     }
   </style>
 </head>
 
 <body>
 
-<h2>Body Dynamics — Live Pose Test</h2>
+<h2>Body Dynamics — Live Pose</h2>
 
 <div id="stage">
-  <video id="video" autoplay playsinline muted></video>
+  <video id="video" autoplay muted playsinline></video>
   <canvas id="canvas"></canvas>
 </div>
 
-<div id="stats">Waiting for WebSocket…</div>
+<div id="stats">Waiting for data…</div>
 
 <script>
 /* =========================
-   DOM & STATE
+   BASIC SETUP
 ========================= */
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const statsBox = document.getElementById("stats");
 
-let latestPose = null;
+/* =========================
+   STATE
+========================= */
+let lastValidPose = null;
 let lastStats = null;
 
 /* =========================
-   SKELETON DEFINITIONS
+   SKELETON DEFINITION (MediaPipe)
 ========================= */
-const DRAW_POINTS = new Set([
-  0, 11, 12, 13, 14, 15, 16,
-  23, 24, 25, 26, 27, 28, 31, 32
-]);
-
 const SKELETON = [
-  [0, 11], [0, 12],
-  [11, 12],
-  [11, 23], [12, 24],
-  [23, 24],
-  [11, 13], [13, 15],
-  [12, 14], [14, 16],
-  [23, 25], [25, 27], [27, 31],
-  [24, 26], [26, 28], [28, 32]
+  [11, 13], [13, 15],       // left arm
+  [12, 14], [14, 16],       // right arm
+  [11, 12],                // shoulders
+  [11, 23], [12, 24],      // torso
+  [23, 24],                // hips
+  [23, 25], [25, 27],      // left leg
+  [24, 26], [26, 28]       // right leg
 ];
+
+/* =========================
+   HELPERS
+========================= */
+function isValidPoint(p) {
+  return (
+    Array.isArray(p) &&
+    p.length >= 2 &&
+    Number.isFinite(p[0]) &&
+    Number.isFinite(p[1])
+  );
+}
+
+/* =========================
+   DRAW FUNCTIONS
+========================= */
+function drawSkeleton(points) {
+  ctx.strokeStyle = "#00b3ff";
+  ctx.lineWidth = 3;
+
+  SKELETON.forEach(([a, b]) => {
+    if (!isValidPoint(points[a]) || !isValidPoint(points[b])) return;
+
+    const x1 = points[a][0] * canvas.width;
+    const y1 = points[a][1] * canvas.height;
+    const x2 = points[b][0] * canvas.width;
+    const y2 = points[b][1] * canvas.height;
+
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  });
+}
+
+function drawPoints(points) {
+  ctx.fillStyle = "#ff003c";
+  points.forEach(p => {
+    if (!isValidPoint(p)) return;
+    ctx.beginPath();
+    ctx.arc(p[0]*canvas.width, p[1]*canvas.height, 4, 0, Math.PI*2);
+    ctx.fill();
+  });
+}
 
 /* =========================
    WEBSOCKET
 ========================= */
 const ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
-ws.binaryType = "arraybuffer";
 
 ws.onopen = () => {
-  statsBox.textContent = "WebSocket connected.\nWaiting for data…";
+  console.log("[WS] Connected");
 };
 
-ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
+ws.onmessage = (e) => {
+  let msg;
+  try {
+    msg = JSON.parse(e.data);
+  } catch {
+    return;
+  }
 
-  if (msg.type === "pose") {
-    latestPose = msg.keypoints;
+  if (msg.type === "pose" && msg.keypoints?.person_0) {
+    lastValidPose = msg.keypoints.person_0;
   }
 
   if (msg.type === "stats") {
@@ -103,6 +149,9 @@ ws.onmessage = (event) => {
     statsBox.textContent = JSON.stringify(msg, null, 2);
   }
 };
+
+ws.onerror = (e) => console.error("[WS ERROR]", e);
+ws.onclose = () => console.warn("[WS CLOSED]");
 
 /* =========================
    CAMERA
@@ -113,13 +162,18 @@ navigator.mediaDevices.getUserMedia({ video: true })
     video.onloadedmetadata = () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-      setInterval(sendFrame, 100);
+
+      setInterval(sendFrame, 100); // ~10 FPS to backend
       requestAnimationFrame(render);
     };
+  })
+  .catch(err => {
+    statsBox.textContent = "Camera access denied.";
+    console.error(err);
   });
 
 /* =========================
-   SEND FRAME
+   SEND FRAME TO BACKEND
 ========================= */
 function sendFrame() {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -132,67 +186,29 @@ function sendFrame() {
 }
 
 /* =========================
-   DRAW FUNCTIONS
-========================= */
-function drawSkeleton(points) {
-  ctx.strokeStyle = "#00b3ff";
-  ctx.lineWidth = 3;
-
-  SKELETON.forEach(([a, b]) => {
-    if (!points[a] || !points[b]) return;
-
-    ctx.beginPath();
-    ctx.moveTo(points[a][0] * canvas.width, points[a][1] * canvas.height);
-    ctx.lineTo(points[b][0] * canvas.width, points[b][1] * canvas.height);
-    ctx.stroke();
-  });
-}
-
-function drawPoints(points) {
-  ctx.fillStyle = "#ff003c";
-  points.forEach((p, i) => {
-    if (!DRAW_POINTS.has(i)) return;
-    ctx.beginPath();
-    ctx.arc(p[0] * canvas.width, p[1] * canvas.height, 5, 0, Math.PI * 2);
-    ctx.fill();
-  });
-}
-
-/* =========================
    RENDER LOOP
 ========================= */
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  if (latestPose && latestPose.person_0) {
-    drawSkeleton(latestPose.person_0);
-    drawPoints(latestPose.person_0);
+  if (lastValidPose) {
+    drawSkeleton(lastValidPose);
+    drawPoints(lastValidPose);
   }
 
-  if (lastStats) {
+  if (lastStats?.input_fps) {
     ctx.fillStyle = "#00ff9c";
-    ctx.font = "16px monospace";
+    ctx.font = "14px monospace";
     ctx.fillText(`FPS: ${lastStats.input_fps}`, 10, 20);
   }
 
+  if (lastStats?.event) {
+    ctx.fillStyle = "#ffaa00";
+    ctx.fillText(`EVENT: ${lastStats.event}`, 10, 40);
+  }
+
   requestAnimationFrame(render);
-  // Draw Center of Mass (COM)
-if (lastStats && lastStats.com) {
-  const [cx, cy] = lastStats.com;
-
-  const x = cx * canvas.width;
-  const y = cy * canvas.height;
-
-  ctx.fillStyle = "#ffd500"; // yellow
-  ctx.beginPath();
-  ctx.arc(x, y, 8, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.font = "14px monospace";
-  ctx.fillText("COM", x + 10, y);
-}
-
 }
 </script>
 
