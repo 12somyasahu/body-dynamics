@@ -1,28 +1,22 @@
 import cv2
 import mediapipe as mp
-#another oneeee
+
 
 class PoseEstimator:
     """
-    MediaPipe Pose wrapper with confidence-aware landmarks.
+    MediaPipe Pose wrapper (webcam-safe).
 
     Returns:
       keypoints: list of dicts or None
         {
           "x": float,
           "y": float,
-          "visibility": float,
-          "presence": float
+          "visibility": float
         }
     """
 
-    def __init__(
-        self,
-        min_visibility=0.5,
-        min_presence=0.5
-    ):
+    def __init__(self, min_visibility=0.2):
         self.min_visibility = min_visibility
-        self.min_presence = min_presence
 
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
@@ -34,32 +28,26 @@ class PoseEstimator:
         )
 
     def process(self, frame):
-        """
-        frame: BGR image (OpenCV)
-        returns: list of landmark dicts or None
-        """
-
         if frame is None:
             return []
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = self.pose.process(rgb)
 
-        keypoints = []
-
         if not result.pose_landmarks:
             return []
 
+        keypoints = []
+
         for lm in result.pose_landmarks.landmark:
-            # Hard confidence gate
-            if lm.visibility < self.min_visibility or lm.presence < self.min_presence:
+            # Webcam-safe confidence gate
+            if lm.visibility < self.min_visibility:
                 keypoints.append(None)
             else:
                 keypoints.append({
                     "x": float(lm.x),
                     "y": float(lm.y),
                     "visibility": float(lm.visibility),
-                    "presence": float(lm.presence),
                 })
 
         return keypoints
