@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Body Dynamics – Live Pose</title>
+  <title>Body Dynamics — Live Engine View</title>
 
   <style>
     body {
@@ -36,13 +36,14 @@
       border: 1px solid #00ff9c;
       white-space: pre;
       font-size: 13px;
+      max-width: 640px;
     }
   </style>
 </head>
 
 <body>
 
-<h2>Body Dynamics — Live Pose</h2>
+<h2>Body Dynamics — Engine Debug View</h2>
 
 <div id="stage">
   <video id="video" autoplay muted playsinline></video>
@@ -63,36 +64,32 @@ const statsBox = document.getElementById("stats");
 /* =========================
    STATE
 ========================= */
-let lastValidPose = null;
+let lastPose = null;
 let lastStats = null;
 
 /* =========================
-   SKELETON DEFINITION (MediaPipe)
+   SKELETON (MediaPipe)
 ========================= */
 const SKELETON = [
-  [11, 13], [13, 15],       // left arm
-  [12, 14], [14, 16],       // right arm
-  [11, 12],                // shoulders
-  [11, 23], [12, 24],      // torso
-  [23, 24],                // hips
-  [23, 25], [25, 27],      // left leg
-  [24, 26], [26, 28]       // right leg
+  [11, 13], [13, 15],
+  [12, 14], [14, 16],
+  [11, 12],
+  [11, 23], [12, 24],
+  [23, 24],
+  [23, 25], [25, 27],
+  [24, 26], [26, 28]
 ];
 
 /* =========================
    HELPERS
 ========================= */
 function isValidPoint(p) {
-  return (
-    Array.isArray(p) &&
-    p.length >= 2 &&
-    Number.isFinite(p[0]) &&
-    Number.isFinite(p[1])
-  );
+  return Array.isArray(p) && p.length >= 2 &&
+         Number.isFinite(p[0]) && Number.isFinite(p[1]);
 }
 
 /* =========================
-   DRAW FUNCTIONS
+   DRAWING
 ========================= */
 function drawSkeleton(points) {
   ctx.strokeStyle = "#00b3ff";
@@ -101,14 +98,9 @@ function drawSkeleton(points) {
   SKELETON.forEach(([a, b]) => {
     if (!isValidPoint(points[a]) || !isValidPoint(points[b])) return;
 
-    const x1 = points[a][0] * canvas.width;
-    const y1 = points[a][1] * canvas.height;
-    const x2 = points[b][0] * canvas.width;
-    const y2 = points[b][1] * canvas.height;
-
     ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
+    ctx.moveTo(points[a][0] * canvas.width, points[a][1] * canvas.height);
+    ctx.lineTo(points[b][0] * canvas.width, points[b][1] * canvas.height);
     ctx.stroke();
   });
 }
@@ -118,19 +110,35 @@ function drawPoints(points) {
   points.forEach(p => {
     if (!isValidPoint(p)) return;
     ctx.beginPath();
-    ctx.arc(p[0]*canvas.width, p[1]*canvas.height, 4, 0, Math.PI*2);
+    ctx.arc(p[0] * canvas.width, p[1] * canvas.height, 4, 0, Math.PI * 2);
     ctx.fill();
   });
+}
+
+function drawCOM(com) {
+  if (!com) return;
+
+  ctx.fillStyle = "#00ff9c";
+  ctx.beginPath();
+  ctx.arc(
+    com.x * canvas.width,
+    com.y * canvas.height,
+    6,
+    0,
+    Math.PI * 2
+  );
+  ctx.fill();
+
+  ctx.fillText("COM",
+    com.x * canvas.width + 8,
+    com.y * canvas.height - 8
+  );
 }
 
 /* =========================
    WEBSOCKET
 ========================= */
 const ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
-
-ws.onopen = () => {
-  console.log("[WS] Connected");
-};
 
 ws.onmessage = (e) => {
   let msg;
@@ -141,7 +149,7 @@ ws.onmessage = (e) => {
   }
 
   if (msg.type === "pose" && msg.keypoints?.person_0) {
-    lastValidPose = msg.keypoints.person_0;
+    lastPose = msg.keypoints.person_0;
   }
 
   if (msg.type === "stats") {
@@ -149,9 +157,6 @@ ws.onmessage = (e) => {
     statsBox.textContent = JSON.stringify(msg, null, 2);
   }
 };
-
-ws.onerror = (e) => console.error("[WS ERROR]", e);
-ws.onclose = () => console.warn("[WS CLOSED]");
 
 /* =========================
    CAMERA
@@ -163,17 +168,13 @@ navigator.mediaDevices.getUserMedia({ video: true })
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
 
-      setInterval(sendFrame, 100); // ~10 FPS to backend
+      setInterval(sendFrame, 100); // ~10 FPS
       requestAnimationFrame(render);
     };
-  })
-  .catch(err => {
-    statsBox.textContent = "Camera access denied.";
-    console.error(err);
   });
 
 /* =========================
-   SEND FRAME TO BACKEND
+   SEND FRAME
 ========================= */
 function sendFrame() {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -192,20 +193,32 @@ function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  if (lastValidPose) {
-    drawSkeleton(lastValidPose);
-    drawPoints(lastValidPose);
+  if (lastPose) {
+    drawSkeleton(lastPose);
+    drawPoints(lastPose);
   }
 
-  if (lastStats?.input_fps) {
-    ctx.fillStyle = "#00ff9c";
-    ctx.font = "14px monospace";
-    ctx.fillText(`FPS: ${lastStats.input_fps}`, 10, 20);
+  if (lastStats?.center_of_mass) {
+    drawCOM(lastStats.center_of_mass);
   }
 
-  if (lastStats?.event) {
+  if (lastStats?.events?.motion) {
     ctx.fillStyle = "#ffaa00";
-    ctx.fillText(`EVENT: ${lastStats.event}`, 10, 40);
+    ctx.fillText(
+      `MOTION: ${lastStats.events.motion}`,
+      10,
+      20
+    );
+  }
+
+  if (lastStats?.lateral_bias?.direction &&
+      lastStats.lateral_bias.direction !== "centered") {
+    ctx.fillStyle = "#ff7b00";
+    ctx.fillText(
+      `LATERAL BIAS: ${lastStats.lateral_bias.direction.toUpperCase()}`,
+      10,
+      40
+    );
   }
 
   requestAnimationFrame(render);

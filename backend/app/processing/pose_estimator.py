@@ -4,11 +4,26 @@ import mediapipe as mp
 
 class PoseEstimator:
     """
-    Pose estimator using MediaPipe.
-    Returns normalized keypoints: [ [x, y], ... ]
+    MediaPipe Pose wrapper with confidence-aware landmarks.
+
+    Returns:
+      keypoints: list of dicts or None
+        {
+          "x": float,
+          "y": float,
+          "visibility": float,
+          "presence": float
+        }
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        min_visibility=0.5,
+        min_presence=0.5
+    ):
+        self.min_visibility = min_visibility
+        self.min_presence = min_presence
+
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
@@ -21,7 +36,7 @@ class PoseEstimator:
     def process(self, frame):
         """
         frame: BGR image (OpenCV)
-        returns: list of [x, y] normalized coordinates
+        returns: list of landmark dicts or None
         """
 
         if frame is None:
@@ -32,8 +47,19 @@ class PoseEstimator:
 
         keypoints = []
 
-        if result.pose_landmarks:
-            for lm in result.pose_landmarks.landmark:
-                keypoints.append([lm.x, lm.y])
+        if not result.pose_landmarks:
+            return []
+
+        for lm in result.pose_landmarks.landmark:
+            # Hard confidence gate
+            if lm.visibility < self.min_visibility or lm.presence < self.min_presence:
+                keypoints.append(None)
+            else:
+                keypoints.append({
+                    "x": float(lm.x),
+                    "y": float(lm.y),
+                    "visibility": float(lm.visibility),
+                    "presence": float(lm.presence),
+                })
 
         return keypoints

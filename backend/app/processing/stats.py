@@ -1,141 +1,154 @@
+import time
 import math
 import numpy as np
 
-# ----------------------------
-# ANGLE UTILITY
-# ----------------------------
+
+# =========================================================
+# Geometry helpers
+# =========================================================
 
 def calculate_angle(a, b, c):
     """
-    Calculate angle ABC (in degrees)
-    a, b, c are [x, y]
+    Calculate angle at point b (in degrees) given points a, b, c.
+    Points are dicts or tuples with x, y.
     """
+    ax, ay = a["x"], a["y"]
+    bx, by = b["x"], b["y"]
+    cx, cy = c["x"], c["y"]
 
-    try:
-        ba = (a[0] - b[0], a[1] - b[1])
-        bc = (c[0] - b[0], c[1] - b[1])
+    ba = np.array([ax - bx, ay - by])
+    bc = np.array([cx - bx, cy - by])
 
-        dot = ba[0] * bc[0] + ba[1] * bc[1]
-        mag_ba = math.sqrt(ba[0] ** 2 + ba[1] ** 2)
-        mag_bc = math.sqrt(bc[0] ** 2 + bc[1] ** 2)
+    cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
+    cosine = np.clip(cosine, -1.0, 1.0)
 
-        if mag_ba == 0 or mag_bc == 0:
-            return None
+    return math.degrees(math.acos(cosine))
 
-        cos_angle = dot / (mag_ba * mag_bc)
-        cos_angle = max(-1.0, min(1.0, cos_angle))
-
-        angle = math.degrees(math.acos(cos_angle))
-        return angle
-
-    except Exception:
-        return None
-
-
-# ----------------------------
-# CENTER OF MASS (COM)
-# ----------------------------
 
 def compute_com(keypoints):
     """
-    Compute Center of Mass (COM) using torso landmarks.
-
-    Uses:
-    - Left shoulder  (11)
-    - Right shoulder (12)
-    - Left hip       (23)
-    - Right hip      (24)
-
-    Returns: (x, y) normalized or None
+    Approximate Center of Mass using shoulders and hips.
+    keypoints: list of dicts or None
     """
+    indices = [11, 12, 23, 24]
+    pts = []
 
-    REQUIRED = [11, 12, 23, 24]
+    for idx in indices:
+        if idx < len(keypoints) and keypoints[idx] is not None:
+            pts.append((keypoints[idx]["x"], keypoints[idx]["y"]))
 
-    try:
-        points = []
-        for idx in REQUIRED:
-            if idx >= len(keypoints):
-                return None
-            if keypoints[idx] is None:
-                return None
-            points.append(keypoints[idx])
-
-        x = sum(p[0] for p in points) / 4
-        y = sum(p[1] for p in points) / 4
-
-        return (x, y)
-
-    except Exception:
+    if not pts:
         return None
-  
 
+    xs, ys = zip(*pts)
+    return np.array([float(sum(xs) / len(xs)), float(sum(ys) / len(ys))])
+
+
+# =========================================================
+# Kalman Filter for COM
+# =========================================================
 
 class KalmanCOM:
     """
-    2D Kalman Filter for Center of Mass tracking.
-    State: [x, y, vx, vy]
+    Simple Kalman filter for COM smoothing.
+    """
+    def __init__(self):
+        self.x = None
+        self.P = 1.0
+        self.Q = 0.01   # process noise
+        self.R = 0.1    # measurement noise
+
+    def update(self, z):
+        if z is None:
+            return self.x
+
+        z = np.array(z, dtype=float)
+
+        if self.x is None:
+            self.x = z
+            return self.x
+
+        # Prediction
+        self.P += self.Q
+
+        # Update
+        K = self.P / (self.P + self.R)
+        self.x = self.x + K * (z - self.x)
+        self.P = (1 - K) * self.P
+
+        return self.x
+
+
+# =========================================================
+# Stability reasoning (THIS is the upgrade)
+# =========================================================
+
+class StabilityTracker:
+    """
+    Tracks stability over time using COM vs BOS margin.
+
+    States:
+      - stable
+      - marginal
+      - unstable
     """
 
-    def __init__(self):
-        # State vector
-        self.x = np.zeros((4, 1))
+    def __init__(
+        self,
+        unstable_time=0.25,
+        margin_eps=0.015,
+        hysteresis=0.01
+    ):
+        self.outside_since = None
+        self.state = "stable"
 
-        # State covariance
-        self.P = np.eye(4) * 1.0
+        self.unstable_time = unstable_time
+        self.margin_eps = margin_eps
+        self.hysteresis = hysteresis
 
-        # State transition matrix
-        self.F = np.array([
-            [1, 0, 1, 0],
-            [0, 1, 0, 1],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1]
-        ])
-
-        # Measurement matrix (we observe x, y)
-        self.H = np.array([
-            [1, 0, 0, 0],
-            [0, 1, 0, 0]
-        ])
-
-        # Measurement noise
-        self.R = np.eye(2) * 0.01
-
-        # Process noise
-        self.Q = np.eye(4) * 0.001
-
-        self.initialized = False
-
-    def update(self, measurement):
+    def update(self, com_x, bos_polygon):
         """
-        measurement: (x, y) tuple
-        returns: (x, y) filtered
-        stats ka satta
+        com_x: float
+        bos_polygon: list of (x, y) tuples
+        returns: (state, margin)
         """
 
-        z = np.array([[measurement[0]], [measurement[1]]])
+        if com_x is None or not bos_polygon:
+            self.outside_since = None
+            self.state = "stable"
+            return self.state, None
 
-        # Initialize state
-        if not self.initialized:
-            self.x[0, 0] = measurement[0]
-            self.x[1, 0] = measurement[1]
-            self.initialized = True
-            return measurement
+        xs = [p[0] for p in bos_polygon]
+        min_x = min(xs)
+        max_x = max(xs)
 
-        # ----------------
-        # Predict
-        # ----------------
-        self.x = self.F @ self.x
-        self.P = self.F @ self.P @ self.F.T + self.Q
+        # Margin: positive = inside, negative = outside
+        if min_x <= com_x <= max_x:
+            margin = min(com_x - min_x, max_x - com_x)
+        else:
+            margin = -min(abs(com_x - min_x), abs(com_x - max_x))
 
-        # ----------------
-        # Update
-        # ----------------
-        y = z - (self.H @ self.x)
-        S = self.H @ self.P @ self.H.T + self.R
-        K = self.P @ self.H.T @ np.linalg.inv(S)
+        now = time.time()
 
-        self.x = self.x + K @ y
-        self.P = (np.eye(4) - K @ self.H) @ self.P
+        # ==============================
+        # State machine with hysteresis
+        # ==============================
 
-        return (self.x[0, 0], self.x[1, 0])
+        if margin >= self.margin_eps + self.hysteresis:
+            self.outside_since = None
+            self.state = "stable"
 
+        elif margin >= -self.margin_eps:
+            self.outside_since = None
+            self.state = "marginal"
+
+        else:
+            if self.outside_since is None:
+                self.outside_since = now
+                self.state = "marginal"
+            elif now - self.outside_since >= self.unstable_time:
+                self.state = "unstable"
+            else:
+                self.state = "marginal"
+
+        return self.state, float(margin)
