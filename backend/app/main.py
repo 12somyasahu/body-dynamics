@@ -18,7 +18,7 @@ from app.realtime.frame_buffer import FrameBuffer
 
 
 # =========================================================
-# App setup
+# App setup setup of app 
 # =========================================================
 app = FastAPI()
 
