@@ -17,7 +17,7 @@ Body Dynamics lets you use your webcam to see real-time body pose landmarks and 
 * Displays real-time performance stats (FPS)
 * Calculates body movement metrics (e.g. elbow angle)
 * Runs fully on your computer (no cloud, no uploads)
-
+* Does not use GPU at all
 ---
 
 ## 🖥️ How to use
