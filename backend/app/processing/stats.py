@@ -4,7 +4,7 @@ import numpy as np
 
 
 # =========================================================
-# Geometry helpers lfgggggggggg
+# Geometry helpers lfggggggggggggg
 # =========================================================
 
 def calculate_angle(a, b, c):
