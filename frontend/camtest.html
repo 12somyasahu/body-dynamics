@@ -2,230 +2,98 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Body Dynamics — Debug View</title>
-
+<title>Body Dynamics – Athlete Engine</title>
 <style>
-  body {
-    margin: 0;
-    padding: 20px;
-    background: #0d0d0d;
-    color: #00ff9c;
-    font-family: monospace;
-  }
-
-  #stage {
-    position: relative;
-    width: 640px;
-    height: 480px;
-    border: 2px solid #00ff9c;
-    background: black;
-  }
-
-  video, canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 640px;
-    height: 480px;
-  }
-
-  #stats {
-    margin-top: 10px;
-    padding: 10px;
-    background: #111;
-    border: 1px solid #00ff9c;
-    white-space: pre;
-    font-size: 13px;
-    max-width: 640px;
-  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #050505; color: #eee; font-family: monospace; overflow: hidden; }
+  #window { display: grid; grid-template-columns: 55% 45%; height: 100vh; padding: 10px; gap: 10px; }
+  #left { display: flex; flex-direction: column; gap: 10px; }
+  #videoBox { position: relative; border: 3px solid #00ff9c; background: #000; flex-grow: 1; }
+  video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  #statsBox { border: 2px solid #333; padding: 15px; font-size: 18px; background: #111; }
+  #right { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 1fr; gap: 10px; }
+  .tile { border: 2px solid #222; background: #111; padding: 20px; }
+  .label { font-size: 14px; opacity: 0.5; margin-bottom: 5px; }
+  .value { font-size: 28px; font-weight: bold; }
+  .stable { color: #00ff9c; } .marginal { color: #ffaa00; } .unstable { color: #ff003c; }
 </style>
 </head>
-
 <body>
-
-<h2>Body Dynamics — Engine Debug View</h2>
-
-<div id="stage">
-  <video id="video" muted playsinline></video>
-  <canvas id="canvas"></canvas>
-  <canvas id="captureCanvas" style="display:none;"></canvas>
+<div id="window">
+  <div id="left">
+    <div id="videoBox"><video id="video" muted playsinline></video><canvas id="canvas"></canvas><canvas id="cap" style="display:none;"></canvas></div>
+    <div id="statsBox">FPS: <span id="fps">—</span> | COM: <span id="com">—</span><div id="wsStatus" style="color:#ff003c">ENGINE OFFLINE</div></div>
+  </div>
+  <div id="right">
+    <div class="tile"><div class="label">PHASE</div><div id="phase" class="value">—</div></div>
+    <div class="tile"><div class="label">SUPPORT</div><div id="support" class="value">—</div></div>
+    <div class="tile"><div class="label">STABILITY</div><div id="stability" class="value">—</div></div>
+    <div class="tile"><div class="label">MARGIN</div><div id="margin" class="value">—</div></div>
+    <div class="tile"><div class="label">FOOTWORK</div><div id="footwork" class="value">—</div></div>
+    <div class="tile"><div class="label">L-ELBOW</div><div id="elbow" class="value">—</div></div>
+  </div>
 </div>
-
-<div id="stats">Waiting for data…</div>
-
 <script>
-/* =====================================================
-   DOM
-===================================================== */
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
+const video = document.getElementById("video"), canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d"), cap = document.getElementById("cap"), capCtx = cap.getContext("2d");
+let lastPose = null, comTrail = [], currentStab = "stable";
 
-const captureCanvas = document.getElementById("captureCanvas");
-const captureCtx = captureCanvas.getContext("2d");
+const SKELETON = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[27,29],[29,31],[27,31],[28,30],[30,32],[28,32]];
 
-const statsBox = document.getElementById("stats");
+function render(points, trail) {
+  ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  if(!points) return;
+  
+  // Skeleton & Head
+  ctx.fillStyle="white"; ctx.beginPath(); ctx.arc(points[0].x*canvas.width, points[0].y*canvas.height, 8, 0, 7); ctx.fill();
+  ctx.strokeStyle="#00b3ff"; ctx.lineWidth=3;
+  SKELETON.forEach(([a,b]) => { if(points[a]&&points[b]){ ctx.beginPath(); ctx.moveTo(points[a].x*canvas.width, points[a].y*canvas.height); ctx.lineTo(points[b].x*canvas.width, points[b].y*canvas.height); ctx.stroke(); }});
 
-let lastPose = null;
-let lastStats = null;
-let videoReady = false;
-
-/* =====================================================
-   SKELETON
-===================================================== */
-const SKELETON = [
-  [11,13],[13,15],
-  [12,14],[14,16],
-  [11,12],
-  [11,23],[12,24],
-  [23,24],
-  [23,25],[25,27],
-  [24,26],[26,28]
-];
-
-/* =====================================================
-   HELPERS
-===================================================== */
-function isValidPoint(p) {
-  return p && typeof p.x === "number" && typeof p.y === "number";
-}
-
-/* =====================================================
-   DRAWING
-===================================================== */
-function drawSkeleton(points) {
-  ctx.strokeStyle = "#00b3ff";
-  ctx.lineWidth = 3;
-
-  SKELETON.forEach(([a,b]) => {
-    if (!isValidPoint(points[a]) || !isValidPoint(points[b])) return;
-    ctx.beginPath();
-    ctx.moveTo(points[a].x * canvas.width, points[a].y * canvas.height);
-    ctx.lineTo(points[b].x * canvas.width, points[b].y * canvas.height);
-    ctx.stroke();
-  });
-}
-
-function drawPoints(points) {
-  ctx.fillStyle = "#ff003c";
-  points.forEach(p => {
-    if (!isValidPoint(p)) return;
-    ctx.beginPath();
-    ctx.arc(p.x * canvas.width, p.y * canvas.height, 4, 0, Math.PI*2);
-    ctx.fill();
-  });
-}
-
-function drawCOM(com, color) {
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(com.x * canvas.width, com.y * canvas.height, 6, 0, Math.PI*2);
-  ctx.fill();
-}
-
-/* =====================================================
-   WEBSOCKET
-===================================================== */
-const ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
-
-ws.onmessage = e => {
-  let msg;
-  try { msg = JSON.parse(e.data); }
-  catch { return; }
-
-  if (msg.type === "pose") {
-    lastPose = msg.keypoints?.person_0 ?? null;
+  // Trail  & Plumb Line 
+  if(trail.length > 0){
+    ctx.strokeStyle="rgba(0,255,156,0.5)"; ctx.lineWidth=2; ctx.beginPath();
+    trail.forEach((p,i) => i===0?ctx.moveTo(p.x*canvas.width,p.y*canvas.height):ctx.lineTo(p.x*canvas.width,p.y*canvas.height)); ctx.stroke();
+    
+    const last = trail[trail.length-1];
+    ctx.strokeStyle = currentStab==="unstable"?"#ff003c":"#00ff9c"; ctx.setLineDash([5,5]);
+    ctx.beginPath(); ctx.moveTo(last.x*canvas.width, last.y*canvas.height); ctx.lineTo(last.x*canvas.width, canvas.height); ctx.stroke(); ctx.setLineDash([]);
   }
 
-  if (msg.type === "stats") {
-    lastStats = msg;
-    statsBox.textContent = JSON.stringify(msg, null, 2);
+  // Hip Reference Line 
+  if(points[23]&&points[24]){
+    ctx.strokeStyle="rgba(255,255,255,0.3)"; ctx.beginPath(); ctx.moveTo(0, points[23].y*canvas.height); ctx.lineTo(canvas.width, points[24].y*canvas.height); ctx.stroke();
   }
-};
-
-/* =====================================================
-   CAMERA — HARDENED
-===================================================== */
-navigator.mediaDevices.getUserMedia({ video: true })
-  .then(async stream => {
-    video.srcObject = stream;
-
-    await new Promise(resolve => {
-      video.onloadedmetadata = resolve;
-    });
-
-    await video.play(); // 🔑 absolutely required
-
-    // Wait until video actually has pixels
-    await new Promise(resolve => {
-      const check = () => {
-        if (video.readyState >= 2) resolve();
-        else requestAnimationFrame(check);
-      };
-      check();
-    });
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    captureCanvas.width = video.videoWidth;
-    captureCanvas.height = video.videoHeight;
-
-    videoReady = true;
-
-    setInterval(sendFrame, 120);
-    requestAnimationFrame(render);
-  })
-  .catch(err => {
-    statsBox.textContent = "Camera error: " + err.message;
-  });
-
-/* =====================================================
-   SEND FRAME
-===================================================== */
-function sendFrame() {
-  if (!videoReady || ws.readyState !== WebSocket.OPEN) return;
-
-  captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-
-  captureCanvas.toBlob(blob => {
-    if (!blob) return;
-    blob.arrayBuffer().then(buf => ws.send(buf));
-  }, "image/jpeg", 0.6);
 }
 
-/* =====================================================
-   RENDER LOOP
-===================================================== */
-function render() {
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-
-  if (videoReady) {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  }
-
-  if (lastPose) {
-    drawSkeleton(lastPose);
-    drawPoints(lastPose);
-  }
-
-  if (lastStats?.center_of_mass && lastStats?.stability) {
-    let color = "#00ff9c";
-    if (lastStats.stability.state === "marginal") color = "#ffaa00";
-    if (lastStats.stability.state === "unstable") color = "#ff003c";
-    drawCOM(lastStats.center_of_mass, color);
-  }
-
-  if (lastStats?.stability?.margin != null) {
-    ctx.fillStyle = "#fff";
-    ctx.fillText(
-      `Stability: ${lastStats.stability.state} | Margin: ${lastStats.stability.margin.toFixed(3)}`,
-      10, 20
-    );
-  }
-
-  requestAnimationFrame(render);
+let ws;
+function connect() {
+  ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
+  ws.onopen = () => { document.getElementById("wsStatus").textContent="ENGINE ONLINE"; document.getElementById("wsStatus").style.color="#00ff9c"; };
+  ws.onclose = () => { setTimeout(connect, 2000); };
+  ws.onmessage = e => {
+    const d = JSON.parse(e.data);
+    if(d.keypoints) lastPose = d.keypoints.person_0;
+    if(d.com_trail) comTrail = d.com_trail;
+    currentStab = d.stability?.state || "stable";
+    
+    document.getElementById("fps").textContent = d.fps;
+    document.getElementById("phase").textContent = (d.phase||"STABLE").toUpperCase();
+    document.getElementById("support").textContent = (d.support||"NONE").toUpperCase();
+    document.getElementById("stability").textContent = currentStab.toUpperCase();
+    document.getElementById("stability").className = "value " + currentStab;
+    document.getElementById("margin").textContent = d.stability?.margin.toFixed(3) || "0.000";
+    document.getElementById("footwork").textContent = d.support==="double_foot"?"PLANTED":"MOBILE";
+    document.getElementById("elbow").textContent = d.joint_angles?.left_elbow ? d.joint_angles.left_elbow.toFixed(1)+"°" : "—";
+  };
 }
+connect();
+
+navigator.mediaDevices.getUserMedia({video:true}).then(async s => {
+  video.srcObject = s; await video.play();
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  cap.width = video.videoWidth; cap.height = video.videoHeight;
+  setInterval(() => { if(ws.readyState===1&&ws.bufferedAmount<50000){ capCtx.drawImage(video,0,0,cap.width,cap.height); cap.toBlob(b=>ws.send(b),"image/jpeg",0.5); }}, 100);
+  const loop = () => { render(lastPose, comTrail); requestAnimationFrame(loop); }; loop();
+});
 </script>
-
 </body>
 </html>

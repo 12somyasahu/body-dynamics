@@ -2,6 +2,7 @@ import asyncio
 import time
 import cv2
 import numpy as np
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -9,312 +10,137 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.processing.pose_estimator import PoseEstimator
 from app.processing.stats import (
-    calculate_angle,
-    compute_com,
-    KalmanCOM,
-    StabilityTracker
+    calculate_angle, compute_com, KalmanCOM, 
+    StabilityTracker, PhaseTracker, SupportTracker
 )
 from app.realtime.frame_buffer import FrameBuffer
 
+# =========================================================
+# 1. SETUP & CONFIGURATION
+# =========================================================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# =========================================================
-# App setup setup of appppp 
-# =========================================================
 app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+executor = ThreadPoolExecutor(max_workers=2)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# SENSITIVITY TUNING
+# We loosened these so the engine "feels" the ground more easily.
+GROUND_EPS = 0.08        # Distance from lowest point to be "on floor"
+FOOT_CONTACT_TIME = 0.05 # How fast the engine trusts the foot is down
+MAX_TRAIL = 30           # Number of points in the COM trail
 
-executor = ThreadPoolExecutor(max_workers=1)
-
-
-@app.get("/")
-async def health():
-    return {"status": "ok"}
-
-
-# =========================================================
-# CPU-heavy inference (SYNC)
-# =========================================================
 def process_frame_sync(frame_bytes, pose_estimator, kalman):
-    np_arr = np.frombuffer(frame_bytes, np.uint8)
-    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    if frame is None:
+    try:
+        if not frame_bytes: return None, None, None
+        np_arr = np.frombuffer(frame_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if frame is None or frame.size == 0: return None, None, None
+
+        keypoints = pose_estimator.process(frame)
+        if not keypoints: return None, None, None
+
+        raw_com = compute_com(keypoints) #
+        filtered_com = kalman.update(raw_com) if raw_com is not None else None
+        
+        angle = None
+        if len(keypoints) > 15 and keypoints[11] and keypoints[13] and keypoints[15]:
+            angle = calculate_angle(keypoints[11], keypoints[13], keypoints[15]) #
+
+        return {"type": "pose", "keypoints": {"person_0": keypoints}}, filtered_com, angle
+    except Exception as e:
+        logger.error(f"Sync Processing Error: {e}")
         return None, None, None
-
-    keypoints = pose_estimator.process(frame)
-    if not keypoints:
-        return None, None, None
-
-    # Left elbow angle (guarded)
-    left_elbow_angle = None
-    if (
-        len(keypoints) > 15 and
-        keypoints[11] and keypoints[13] and keypoints[15]
-    ):
-        left_elbow_angle = calculate_angle(
-            keypoints[11],
-            keypoints[13],
-            keypoints[15],
-        )
-
-    raw_com = compute_com(keypoints)
-    filtered_com = kalman.update(raw_com) if raw_com is not None else None
-
-    return {
-        "type": "pose",
-        "keypoints": {"person_0": keypoints}
-    }, filtered_com, left_elbow_angle
-
 
 # =========================================================
-# WebSocket
+# 2. WEBSOCKET ENGINE
 # =========================================================
 @app.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket):
     await websocket.accept()
+    fb, pe, kl = FrameBuffer(), PoseEstimator(), KalmanCOM()
+    st_tracker, su_tracker, ph_tracker = StabilityTracker(), SupportTracker(), PhaseTracker()
 
-    frame_buffer = FrameBuffer()
-    pose_estimator = PoseEstimator()
-    kalman = KalmanCOM()
-    stability_tracker = StabilityTracker()
+    com_history = [] 
+    frames, start_time = 0, time.time()
+    foot_state = {"left": {"stable_since": None}, "right": {"stable_since": None}}
 
-    loop = asyncio.get_event_loop()
-
-    prev_com = None
-    prev_time = None
-    frames = 0
-    start_time = time.time()
-    movement_active = False
-
-    # Foot contact state
-    foot_state = {
-        "left":  {"y": None, "vy": None, "stable_since": None, "grounded": False},
-        "right": {"y": None, "vy": None, "stable_since": None, "grounded": False},
-    }
-
-    MOVE_START_SPEED = 0.15
-    MOVE_STOP_SPEED = 0.05
-
-    FOOT_VY_EPS = 0.015
-    FOOT_CONTACT_TIME = 0.25
-    GROUND_EPS = 0.025
-
-    async def receive_frames():
+    try:
         while True:
-            frame = await websocket.receive_bytes()
-            await frame_buffer.push(frame)
-
-    async def process_frames():
-        nonlocal prev_com, prev_time, frames, movement_active
-
-        while True:
-            frame = await frame_buffer.pop()
-            if frame is None:
+            try:
+                frame_bytes = await asyncio.wait_for(websocket.receive_bytes(), timeout=2.0)
+                await fb.push(frame_bytes)
+            except asyncio.TimeoutError: continue
+            
+            latest = await fb.pop()
+            if not latest:
                 await asyncio.sleep(0.001)
                 continue
 
-            frames += 1
-            now = time.time()
-
-            pose_payload, filtered_com, left_elbow_angle = await loop.run_in_executor(
-                executor,
-                process_frame_sync,
-                frame,
-                pose_estimator,
-                kalman
-            )
-
-            if not pose_payload:
+            # Process with Lag Protection
+            loop = asyncio.get_event_loop()
+            try:
+                future = loop.run_in_executor(executor, process_frame_sync, latest, pe, kl)
+                payload, f_com, angle = await asyncio.wait_for(future, timeout=0.2)
+            except asyncio.TimeoutError: continue
+            
+            if not payload:
+                kl.reset() #
                 continue
+            
+            frames += 1
+            keypoints = payload["keypoints"]["person_0"]
 
-            keypoints = pose_payload["keypoints"]["person_0"]
+            # --- DYNAMIC GROUND DETECTION ---
+            # [cite_start]Finds the lowest point in the current frame [cite: 203]
+            foot_indices = [27, 28, 29, 30, 31, 32]
+            current_ys = [kp["y"] for i, kp in enumerate(keypoints) if i in foot_indices and kp]
+            ground_y = max(current_ys) if current_ys else None
 
-            # -------------------------------------------------
-            # COM motion (for movement events only)
-            # -------------------------------------------------
-            speed = None
-            if filtered_com is not None and prev_com is not None and prev_time is not None:
-                dt = now - prev_time
-                if dt > 0:
-                    vx = float(filtered_com[0] - prev_com[0]) / dt
-                    vy = float(filtered_com[1] - prev_com[1]) / dt
-                    speed = (vx**2 + vy**2) ** 0.5
+            def is_grounded(side, ankle_idx):
+                kp = keypoints[ankle_idx]
+                if not kp or ground_y is None: return False
+                # Is foot near the dynamic ground level?
+                if abs(kp["y"] - ground_y) < GROUND_EPS:
+                    if foot_state[side]["stable_since"] is None: 
+                        foot_state[side]["stable_since"] = time.time()
+                    return (time.time() - foot_state[side]["stable_since"]) > FOOT_CONTACT_TIME
+                foot_state[side]["stable_since"] = None
+                return False
 
-            prev_com = filtered_com
-            prev_time = now
+            l_g, r_g = is_grounded("left", 27), is_grounded("right", 28)
+            support_type = "double_foot" if (l_g and r_g) else "single_foot" if (l_g or r_g) else "none"
+            
+            # --- BASE OF SUPPORT (BOS) ---
+            # [cite_start]Build the area between grounded feet [cite: 176]
+            bos_pts = []
+            if l_g: bos_pts.extend([(kp["x"], kp["y"]) for i, kp in enumerate(keypoints) if i in [27, 29, 31] and kp])
+            if r_g: bos_pts.extend([(kp["x"], kp["y"]) for i, kp in enumerate(keypoints) if i in [28, 30, 32] and kp])
+            
+            # Update trackers from stats.py
+            support = su_tracker.update(support_type, bos_pts)
+            # Stability now has a real BOS to compare against
+            stab_state, margin = st_tracker.update(f_com[0] if f_com is not None else None, support["polygon"] if support else None)
+            
+            # [cite_start]Update COM Trail [cite: 201]
+            if f_com is not None:
+                com_history.append({"x": round(float(f_com[0]), 3), "y": round(float(f_com[1]), 3)})
+                if len(com_history) > MAX_TRAIL: com_history.pop(0)
 
-            motion_event = None
-            if speed is not None:
-                if not movement_active and speed > MOVE_START_SPEED:
-                    movement_active = True
-                    motion_event = "movement_started"
-                elif movement_active and speed < MOVE_STOP_SPEED:
-                    movement_active = False
-                    motion_event = "movement_stopped"
+            # Send full biomechanical packet
+            await websocket.send_json({
+                "type": "stats",
+                "fps": round(frames / (max(time.time() - start_time, 1)), 1),
+                "keypoints": {"person_0": keypoints},
+                "com_trail": com_history,
+                "stability": {"state": stab_state, "margin": margin},
+                "phase": ph_tracker.update(support_type, stab_state, 0),
+                "support": support_type,
+                "joint_angles": {"left_elbow": angle}
+            })
 
-            # -------------------------------------------------
-            # GLOBAL GROUND ESTIMATION
-            # -------------------------------------------------
-            foot_ys = []
-            for idx in [27, 28, 29, 30, 31, 32]:
-                if idx < len(keypoints) and keypoints[idx]:
-                    foot_ys.append(float(keypoints[idx]["y"]))
-
-            global_ground_y = max(foot_ys) if foot_ys else None
-
-            # -------------------------------------------------
-            # FOOT CONTACT DETECTION
-            # -------------------------------------------------
-            def update_foot(side, ankle_idx):
-                state = foot_state[side]
-                if (
-                    ankle_idx >= len(keypoints) or
-                    not keypoints[ankle_idx] or
-                    global_ground_y is None
-                ):
-                    state["grounded"] = False
-                    state["stable_since"] = None
-                    return
-
-                y = float(keypoints[ankle_idx]["y"])
-                vy = y - state["y"] if state["y"] is not None else 0.0
-                state["y"] = y
-                state["vy"] = vy
-
-                near_ground = abs(y - global_ground_y) < GROUND_EPS
-
-                if abs(vy) < FOOT_VY_EPS and near_ground:
-                    if state["stable_since"] is None:
-                        state["stable_since"] = now
-                    elif now - state["stable_since"] > FOOT_CONTACT_TIME:
-                        state["grounded"] = True
-                else:
-                    state["stable_since"] = None
-                    state["grounded"] = False
-
-            update_foot("left", 27)
-            update_foot("right", 28)
-
-            left_grounded = foot_state["left"]["grounded"]
-            right_grounded = foot_state["right"]["grounded"]
-
-            # -------------------------------------------------
-            # BASE OF SUPPORT (polygon)
-            # -------------------------------------------------
-            bos_polygon = None
-            support_type = None
-
-            def kp(i):
-                return (
-                    float(keypoints[i]["x"]),
-                    float(keypoints[i]["y"])
-                )
-
-            if left_grounded or right_grounded:
-                pts = []
-
-                if left_grounded and len(keypoints) > 32:
-                    if keypoints[29] and keypoints[31]:
-                        pts.extend([kp(29), kp(31)])
-
-                if right_grounded and len(keypoints) > 32:
-                    if keypoints[32] and keypoints[30]:
-                        pts.extend([kp(32), kp(30)])
-
-                if len(pts) >= 2:
-                    bos_polygon = pts
-                    support_type = (
-                        "double_foot" if left_grounded and right_grounded
-                        else "single_foot"
-                    )
-
-            # -------------------------------------------------
-            # STABILITY (delegated to stats.py)
-            # -------------------------------------------------
-            stability_state = None
-            margin = None
-            balance_event = None
-
-            if filtered_com is not None and bos_polygon:
-                stability_state, margin = stability_tracker.update(
-                    com_x=float(filtered_com[0]),
-                    bos_polygon=bos_polygon
-                )
-
-                if stability_state == "unstable":
-                    balance_event = "loss_of_balance_risk"
-
-            # -------------------------------------------------
-            # Elbow semantics
-            # -------------------------------------------------
-            elbow_state = None
-            if left_elbow_angle is not None:
-                if left_elbow_angle < 140:
-                    elbow_state = "flexion"
-                elif left_elbow_angle > 160:
-                    elbow_state = "extension"
-                else:
-                    elbow_state = "transition"
-
-            # -------------------------------------------------
-            # SEND DATA
-            # -------------------------------------------------
-            await websocket.send_json(pose_payload)
-
-            if frames % 10 == 0:
-                elapsed = time.time() - start_time
-                fps = frames / elapsed if elapsed > 0 else 0.0
-
-                await websocket.send_json({
-                    "type": "stats",
-                    "frames_received": int(frames),
-                    "uptime_sec": round(float(elapsed), 2),
-                    "input_fps": round(float(fps), 2),
-
-                    "joint_angles": {
-                        "left_elbow": {
-                            "angle_deg": round(float(left_elbow_angle), 1)
-                            if left_elbow_angle is not None else None,
-                            "state": elbow_state,
-                            "valid": bool(left_elbow_angle is not None)
-                        }
-                    },
-
-                    "center_of_mass": {
-                        "x": round(float(filtered_com[0]), 3),
-                        "y": round(float(filtered_com[1]), 3),
-                        "reference": "image_space",
-                        "in_frame": bool(
-                            0.0 <= float(filtered_com[0]) <= 1.0 and
-                            0.0 <= float(filtered_com[1]) <= 1.0
-                        )
-                    } if filtered_com is not None else None,
-
-                    "base_of_support": {
-                        "polygon": bos_polygon,
-                        "support": support_type
-                    } if bos_polygon else None,
-
-                    "stability": {
-                        "state": stability_state,
-                        "margin": margin,
-                        "basis": "com_vs_base_of_support"
-                    } if stability_state else None,
-
-                    "events": {
-                        "motion": motion_event,
-                        "balance": balance_event,
-                        "phase": None
-                    }
-                })
-
-    try:
-        await asyncio.gather(receive_frames(), process_frames())
-    except WebSocketDisconnect:
-        print("WebSocket disconnected")
+    except WebSocketDisconnect: logger.info("Client disconnected")
+    finally:
+        pe.close() #
+        kl.reset() #

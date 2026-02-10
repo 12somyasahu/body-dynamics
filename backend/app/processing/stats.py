@@ -4,14 +4,10 @@ import numpy as np
 
 
 # =========================================================
-# Geometry helpers lfggggggggggggg
+# Geometry helpers
 # =========================================================
 
 def calculate_angle(a, b, c):
-    """
-    Calculate angle at point b (in degrees) given points a, b, c.
-    Points are dicts or tuples with x, y.
-    """
     ax, ay = a["x"], a["y"]
     bx, by = b["x"], b["y"]
     cx, cy = c["x"], c["y"]
@@ -26,10 +22,6 @@ def calculate_angle(a, b, c):
 
 
 def compute_com(keypoints):
-    """
-    Approximate Center of Mass using shoulders and hips.
-    keypoints: list of dicts or None
-    """
     indices = [11, 12, 23, 24]
     pts = []
 
@@ -49,14 +41,11 @@ def compute_com(keypoints):
 # =========================================================
 
 class KalmanCOM:
-    """
-    Simple Kalman filter for COM smoothing.
-    """
     def __init__(self):
         self.x = None
         self.P = 1.0
-        self.Q = 0.01   # process noise
-        self.R = 0.1    # measurement noise
+        self.Q = 0.01
+        self.R = 0.1
 
     def update(self, z):
         if z is None:
@@ -68,10 +57,7 @@ class KalmanCOM:
             self.x = z
             return self.x
 
-        # Prediction
         self.P += self.Q
-
-        # Update
         K = self.P / (self.P + self.R)
         self.x = self.x + K * (z - self.x)
         self.P = (1 - K) * self.P
@@ -80,19 +66,48 @@ class KalmanCOM:
 
 
 # =========================================================
-# Stability reasoning (THIS is the upgrade)
+# Support persistence (NEW)
+# =========================================================
+
+class SupportTracker:
+    """
+    Stabilizes base-of-support over time.
+    Prevents BOS flicker due to brief occlusion or jitter.
+    """
+
+    def __init__(self, drop_time=0.35):
+        self.current_support = None
+        self.last_seen_time = None
+        self.drop_time = drop_time
+
+    def update(self, support_type, bos_polygon):
+        now = time.time()
+
+        if support_type and bos_polygon:
+            self.current_support = {
+                "support": support_type,
+                "polygon": bos_polygon
+            }
+            self.last_seen_time = now
+            return self.current_support
+
+        if (
+            self.current_support and
+            self.last_seen_time and
+            now - self.last_seen_time < self.drop_time
+        ):
+            return self.current_support
+
+        self.current_support = None
+        self.last_seen_time = None
+        return None
+
+
+# =========================================================
+# Stability reasoning
 # =========================================================
 
 class StabilityTracker:
-    """
-    Tracks stability over time using COM vs BOS margin.
-
-    States:
-      - stable
-      - marginal
-      - unstable
-    """
-
     def __init__(
         self,
         unstable_time=0.25,
@@ -107,12 +122,6 @@ class StabilityTracker:
         self.hysteresis = hysteresis
 
     def update(self, com_x, bos_polygon):
-        """
-        com_x: float
-        bos_polygon: list of (x, y) tuples
-        returns: (state, margin)
-        """
-
         if com_x is None or not bos_polygon:
             self.outside_since = None
             self.state = "stable"
@@ -122,17 +131,12 @@ class StabilityTracker:
         min_x = min(xs)
         max_x = max(xs)
 
-        # Margin: positive = inside, negative = outside
         if min_x <= com_x <= max_x:
             margin = min(com_x - min_x, max_x - com_x)
         else:
             margin = -min(abs(com_x - min_x), abs(com_x - max_x))
 
         now = time.time()
-
-        # ==============================
-        # State machine with hysteresis
-        # ==============================
 
         if margin >= self.margin_eps + self.hysteresis:
             self.outside_since = None
@@ -152,3 +156,45 @@ class StabilityTracker:
                 self.state = "marginal"
 
         return self.state, float(margin)
+
+
+# =========================================================
+# Phase segmentation
+# =========================================================
+
+class PhaseTracker:
+    def __init__(self, recovery_time=0.4):
+        self.current_phase = "double_support_stable"
+        self.last_unstable_time = None
+        self.recovery_time = recovery_time
+
+    def update(self, support_type, stability_state, com_speed):
+        now = time.time()
+
+        if stability_state == "unstable":
+            self.current_phase = "unstable"
+            self.last_unstable_time = now
+            return self.current_phase
+
+        if self.last_unstable_time is not None:
+            if now - self.last_unstable_time < self.recovery_time:
+                self.current_phase = "recovery"
+                return self.current_phase
+            self.last_unstable_time = None
+
+        if stability_state == "marginal":
+            self.current_phase = "transition"
+            return self.current_phase
+
+        if com_speed and com_speed > 0.25:
+            self.current_phase = "transition"
+            return self.current_phase
+
+        if support_type == "double_foot":
+            self.current_phase = "double_support_stable"
+        elif support_type == "single_foot":
+            self.current_phase = "single_support_stable"
+        else:
+            self.current_phase = "transition"
+
+        return self.current_phase
