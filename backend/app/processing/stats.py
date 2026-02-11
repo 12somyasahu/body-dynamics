@@ -63,6 +63,11 @@ class KalmanCOM:
         self.P = (1 - K) * self.P
 
         return self.x
+    
+    def reset(self):
+        """Reset filter state (call when person leaves frame)"""
+        self.x = None
+        self.P = 1.0
 
 
 # =========================================================

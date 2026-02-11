@@ -1,15 +1,18 @@
-fastapi==0.110.0
-uvicorn[standard]==0.29.0
+# Core dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+websockets==12.0
 
-numpy==1.26.4
-opencv-python==4.9.0.80
-mediapipe==0.10.9
+# Computer vision
+opencv-python==4.8.1.78
+mediapipe==0.10.8
+numpy==1.24.3
 
-pydantic==2.6.4
-fastapi
-uvicorn[standard]
-websockets
-opencv-python
-mediapipe
-numpy
-python-multipart
+# Utilities
+pyyaml==6.0.1  # For config file loading
+python-multipart==0.0.6
+
+# Development (optional)
+pytest==7.4.3
+black==23.11.0
+ruff==0.1.6

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Body Dynamics – Athlete Engine</title>
+<title>Body Dynamics — Athlete Engine</title>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #050505; color: #eee; font-family: monospace; overflow: hidden; }
@@ -22,7 +22,12 @@
 <div id="window">
   <div id="left">
     <div id="videoBox"><video id="video" muted playsinline></video><canvas id="canvas"></canvas><canvas id="cap" style="display:none;"></canvas></div>
-    <div id="statsBox">FPS: <span id="fps">—</span> | COM: <span id="com">—</span><div id="wsStatus" style="color:#ff003c">ENGINE OFFLINE</div></div>
+    <div id="statsBox">
+      FPS: <span id="fps">—</span> | 
+      COM: <span id="com">—</span> | 
+      Quality: <span id="quality">—</span>%
+      <div id="wsStatus" style="color:#ff003c">ENGINE OFFLINE</div>
+    </div>
   </div>
   <div id="right">
     <div class="tile"><div class="label">PHASE</div><div id="phase" class="value">—</div></div>
@@ -36,6 +41,9 @@
 <script>
 const video = document.getElementById("video"), canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d"), cap = document.getElementById("cap"), capCtx = cap.getContext("2d");
 let lastPose = null, comTrail = [], currentStab = "stable";
+
+// ADAPTIVE QUALITY TRACKING
+let motionLevel = 0.5; // Start at medium quality
 
 const SKELETON = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[27,29],[29,31],[27,31],[28,30],[30,32],[28,32]];
 
@@ -67,22 +75,61 @@ function render(points, trail) {
 let ws;
 function connect() {
   ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
-  ws.onopen = () => { document.getElementById("wsStatus").textContent="ENGINE ONLINE"; document.getElementById("wsStatus").style.color="#00ff9c"; };
-  ws.onclose = () => { setTimeout(connect, 2000); };
+  ws.onopen = () => { 
+    document.getElementById("wsStatus").textContent="ENGINE ONLINE"; 
+    document.getElementById("wsStatus").style.color="#00ff9c"; 
+  };
+  ws.onclose = () => { 
+    document.getElementById("wsStatus").textContent="ENGINE OFFLINE";
+    document.getElementById("wsStatus").style.color="#ff003c";
+    setTimeout(connect, 2000); 
+  };
   ws.onmessage = e => {
     const d = JSON.parse(e.data);
     if(d.keypoints) lastPose = d.keypoints.person_0;
-    if(d.com_trail) comTrail = d.com_trail;
+    if(d.com_trail) {
+      comTrail = d.com_trail;
+      
+      // ADAPTIVE QUALITY: Calculate motion from COM trail
+      if(comTrail.length >= 2) {
+        const latest = comTrail[comTrail.length - 1];
+        const prev = comTrail[comTrail.length - 2];
+        const comSpeed = Math.sqrt(
+          Math.pow(latest.x - prev.x, 2) + 
+          Math.pow(latest.y - prev.y, 2)
+        );
+        
+        // Adjust quality based on speed
+        if(comSpeed > 0.03) {
+          motionLevel = 0.7;  // High quality during fast movement
+        } else if(comSpeed > 0.01) {
+          motionLevel = 0.5;  // Medium for moderate movement
+        } else {
+          motionLevel = 0.3;  // Low quality when static
+        }
+      }
+    }
+    
     currentStab = d.stability?.state || "stable";
     
-    document.getElementById("fps").textContent = d.fps;
+    // Update UI
+    document.getElementById("fps").textContent = d.fps || "—";
     document.getElementById("phase").textContent = (d.phase||"STABLE").toUpperCase();
     document.getElementById("support").textContent = (d.support||"NONE").toUpperCase();
     document.getElementById("stability").textContent = currentStab.toUpperCase();
     document.getElementById("stability").className = "value " + currentStab;
-    document.getElementById("margin").textContent = d.stability?.margin.toFixed(3) || "0.000";
+    document.getElementById("margin").textContent = d.stability?.margin?.toFixed(3) || "0.000";
     document.getElementById("footwork").textContent = d.support==="double_foot"?"PLANTED":"MOBILE";
     document.getElementById("elbow").textContent = d.joint_angles?.left_elbow ? d.joint_angles.left_elbow.toFixed(1)+"°" : "—";
+    
+    // Show current COM position
+    if(comTrail.length > 0) {
+      const latest = comTrail[comTrail.length - 1];
+      document.getElementById("com").textContent = `${latest.x.toFixed(2)}, ${latest.y.toFixed(2)}`;
+    }
+    
+    // Show current quality %
+    document.getElementById("quality").textContent = Math.round(motionLevel * 100);
   };
 }
 connect();
@@ -91,7 +138,16 @@ navigator.mediaDevices.getUserMedia({video:true}).then(async s => {
   video.srcObject = s; await video.play();
   canvas.width = video.videoWidth; canvas.height = video.videoHeight;
   cap.width = video.videoWidth; cap.height = video.videoHeight;
-  setInterval(() => { if(ws.readyState===1&&ws.bufferedAmount<50000){ capCtx.drawImage(video,0,0,cap.width,cap.height); cap.toBlob(b=>ws.send(b),"image/jpeg",0.5); }}, 100);
+  
+  // ADAPTIVE FRAME SENDING
+  setInterval(() => { 
+    if(ws.readyState===1 && ws.bufferedAmount<50000) { 
+      capCtx.drawImage(video,0,0,cap.width,cap.height); 
+      // Use adaptive quality instead of fixed 0.5
+      cap.toBlob(b=>ws.send(b),"image/jpeg", motionLevel); 
+    }
+  }, 100);
+  
   const loop = () => { render(lastPose, comTrail); requestAnimationFrame(loop); }; loop();
 });
 </script>
