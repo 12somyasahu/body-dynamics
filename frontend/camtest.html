@@ -2,153 +2,250 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Body Dynamics — Athlete Engine</title>
+<title>Body Dynamics — Motion Engine</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; background: #050505; color: #eee; font-family: monospace; overflow: hidden; }
-  #window { display: grid; grid-template-columns: 55% 45%; height: 100vh; padding: 10px; gap: 10px; }
-  #left { display: flex; flex-direction: column; gap: 10px; }
-  #videoBox { position: relative; border: 3px solid #00ff9c; background: #000; flex-grow: 1; }
-  video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-  #statsBox { border: 2px solid #333; padding: 15px; font-size: 18px; background: #111; }
-  #right { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 1fr; gap: 10px; }
-  .tile { border: 2px solid #222; background: #111; padding: 20px; }
-  .label { font-size: 14px; opacity: 0.5; margin-bottom: 5px; }
-  .value { font-size: 28px; font-weight: bold; }
-  .stable { color: #00ff9c; } .marginal { color: #ffaa00; } .unstable { color: #ff003c; }
+  body {
+    margin: 0;
+    background: #050505;
+    color: #eee;
+    font-family: monospace;
+    overflow: hidden;
+  }
+
+  #window {
+    display: grid;
+    grid-template-columns: 60% 40%;
+    height: 100vh;
+    padding: 10px;
+    gap: 10px;
+  }
+
+  #left {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  #videoBox {
+    position: relative;
+    border: 3px solid #00ff9c;
+    background: #000;
+    flex-grow: 1;
+  }
+
+  video, canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  #statsBox {
+    border: 2px solid #222;
+    padding: 15px;
+    font-size: 16px;
+    background: #111;
+  }
+
+  #right {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .tile {
+    border: 2px solid #222;
+    background: #111;
+    padding: 20px;
+  }
+
+  .label {
+    font-size: 14px;
+    opacity: 0.5;
+    margin-bottom: 5px;
+  }
+
+  .value {
+    font-size: 26px;
+    font-weight: bold;
+  }
+
+  .stable { color: #00ff9c; }
+  .marginal { color: #ffaa00; }
+  .unstable { color: #ff003c; }
 </style>
 </head>
 <body>
+
 <div id="window">
   <div id="left">
-    <div id="videoBox"><video id="video" muted playsinline></video><canvas id="canvas"></canvas><canvas id="cap" style="display:none;"></canvas></div>
+    <div id="videoBox">
+      <video id="video" muted playsinline></video>
+      <canvas id="canvas"></canvas>
+      <canvas id="cap" style="display:none;"></canvas>
+    </div>
+
     <div id="statsBox">
-      FPS: <span id="fps">—</span> | 
-      COM: <span id="com">—</span> | 
-      Quality: <span id="quality">—</span>%
-      <div id="wsStatus" style="color:#ff003c">ENGINE OFFLINE</div>
+      FPS: <span id="fps">—</span><br>
+      COM: <span id="com">—</span><br>
+      ENGINE: <span id="wsStatus" style="color:#ff003c">OFFLINE</span>
     </div>
   </div>
+
   <div id="right">
-    <div class="tile"><div class="label">PHASE</div><div id="phase" class="value">—</div></div>
-    <div class="tile"><div class="label">SUPPORT</div><div id="support" class="value">—</div></div>
-    <div class="tile"><div class="label">STABILITY</div><div id="stability" class="value">—</div></div>
-    <div class="tile"><div class="label">MARGIN</div><div id="margin" class="value">—</div></div>
-    <div class="tile"><div class="label">FOOTWORK</div><div id="footwork" class="value">—</div></div>
-    <div class="tile"><div class="label">L-ELBOW</div><div id="elbow" class="value">—</div></div>
+    <div class="tile">
+      <div class="label">PHASE</div>
+      <div id="phase" class="value">—</div>
+    </div>
+
+    <div class="tile">
+      <div class="label">SUPPORT</div>
+      <div id="support" class="value">—</div>
+    </div>
+
+    <div class="tile">
+      <div class="label">STABILITY</div>
+      <div id="stability" class="value">—</div>
+    </div>
+
+    <div class="tile">
+      <div class="label">MARGIN</div>
+      <div id="margin" class="value">—</div>
+    </div>
   </div>
 </div>
+
 <script>
-const video = document.getElementById("video"), canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d"), cap = document.getElementById("cap"), capCtx = cap.getContext("2d");
-let lastPose = null, comTrail = [], currentStab = "stable";
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const cap = document.getElementById("cap");
+const capCtx = cap.getContext("2d");
 
-// ADAPTIVE QUALITY TRACKING
-let motionLevel = 0.5; // Start at medium quality
+let lastPose = null;
+let comTrail = [];
 
-const SKELETON = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[27,29],[29,31],[27,31],[28,30],[30,32],[28,32]];
+const SKELETON = [
+  [11,12],[11,13],[13,15],[12,14],[14,16],
+  [11,23],[12,24],[23,24],
+  [23,25],[25,27],[24,26],[26,28],
+  [27,29],[29,31],[28,30],[30,32]
+];
 
 function render(points, trail) {
-  ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+
   if(!points) return;
-  
-  // Skeleton & Head
-  ctx.fillStyle="white"; ctx.beginPath(); ctx.arc(points[0].x*canvas.width, points[0].y*canvas.height, 8, 0, 7); ctx.fill();
-  ctx.strokeStyle="#00b3ff"; ctx.lineWidth=3;
-  SKELETON.forEach(([a,b]) => { if(points[a]&&points[b]){ ctx.beginPath(); ctx.moveTo(points[a].x*canvas.width, points[a].y*canvas.height); ctx.lineTo(points[b].x*canvas.width, points[b].y*canvas.height); ctx.stroke(); }});
 
-  // Trail  & Plumb Line 
+  ctx.strokeStyle="#00b3ff";
+  ctx.lineWidth=2;
+
+  SKELETON.forEach(([a,b]) => {
+    if(points[a] && points[b]) {
+      ctx.beginPath();
+      ctx.moveTo(points[a].x*canvas.width, points[a].y*canvas.height);
+      ctx.lineTo(points[b].x*canvas.width, points[b].y*canvas.height);
+      ctx.stroke();
+    }
+  });
+
   if(trail.length > 0){
-    ctx.strokeStyle="rgba(0,255,156,0.5)"; ctx.lineWidth=2; ctx.beginPath();
-    trail.forEach((p,i) => i===0?ctx.moveTo(p.x*canvas.width,p.y*canvas.height):ctx.lineTo(p.x*canvas.width,p.y*canvas.height)); ctx.stroke();
-    
-    const last = trail[trail.length-1];
-    ctx.strokeStyle = currentStab==="unstable"?"#ff003c":"#00ff9c"; ctx.setLineDash([5,5]);
-    ctx.beginPath(); ctx.moveTo(last.x*canvas.width, last.y*canvas.height); ctx.lineTo(last.x*canvas.width, canvas.height); ctx.stroke(); ctx.setLineDash([]);
-  }
-
-  // Hip Reference Line 
-  if(points[23]&&points[24]){
-    ctx.strokeStyle="rgba(255,255,255,0.3)"; ctx.beginPath(); ctx.moveTo(0, points[23].y*canvas.height); ctx.lineTo(canvas.width, points[24].y*canvas.height); ctx.stroke();
+    ctx.strokeStyle="rgba(0,255,156,0.6)";
+    ctx.beginPath();
+    trail.forEach((p,i) => {
+      const x = p.x*canvas.width;
+      const y = p.y*canvas.height;
+      if(i===0) ctx.moveTo(x,y);
+      else ctx.lineTo(x,y);
+    });
+    ctx.stroke();
   }
 }
 
 let ws;
+
 function connect() {
   ws = new WebSocket("ws://127.0.0.1:8000/ws/live");
-  ws.onopen = () => { 
-    document.getElementById("wsStatus").textContent="ENGINE ONLINE"; 
-    document.getElementById("wsStatus").style.color="#00ff9c"; 
+
+  ws.onopen = () => {
+    document.getElementById("wsStatus").textContent = "ONLINE";
+    document.getElementById("wsStatus").style.color = "#00ff9c";
   };
-  ws.onclose = () => { 
-    document.getElementById("wsStatus").textContent="ENGINE OFFLINE";
-    document.getElementById("wsStatus").style.color="#ff003c";
-    setTimeout(connect, 2000); 
+
+  ws.onclose = () => {
+    document.getElementById("wsStatus").textContent = "OFFLINE";
+    document.getElementById("wsStatus").style.color = "#ff003c";
+    setTimeout(connect, 2000);
   };
-  ws.onmessage = e => {
-    const d = JSON.parse(e.data);
-    if(d.keypoints) lastPose = d.keypoints.person_0;
-    if(d.com_trail) {
-      comTrail = d.com_trail;
-      
-      // ADAPTIVE QUALITY: Calculate motion from COM trail
-      if(comTrail.length >= 2) {
-        const latest = comTrail[comTrail.length - 1];
-        const prev = comTrail[comTrail.length - 2];
-        const comSpeed = Math.sqrt(
-          Math.pow(latest.x - prev.x, 2) + 
-          Math.pow(latest.y - prev.y, 2)
-        );
-        
-        // Adjust quality based on speed
-        if(comSpeed > 0.03) {
-          motionLevel = 0.7;  // High quality during fast movement
-        } else if(comSpeed > 0.01) {
-          motionLevel = 0.5;  // Medium for moderate movement
-        } else {
-          motionLevel = 0.3;  // Low quality when static
+
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+
+    if(data.type === "pose") {
+      lastPose = data.keypoints.person_0;
+    }
+
+    if(data.type === "stats") {
+      document.getElementById("fps").textContent = data.fps || "—";
+
+      document.getElementById("phase").textContent =
+        (data.phase || "—").toUpperCase();
+
+      document.getElementById("support").textContent =
+        (data.support || "—").toUpperCase();
+
+      if(data.stability) {
+        const state = data.stability.state;
+        document.getElementById("stability").textContent =
+          state.toUpperCase();
+        document.getElementById("stability").className =
+          "value " + state;
+
+        document.getElementById("margin").textContent =
+          data.stability.margin ?? "—";
+      }
+
+      if(data.com_trail) {
+        comTrail = data.com_trail;
+        const latest = comTrail[comTrail.length-1];
+        if(latest){
+          document.getElementById("com").textContent =
+            `${latest.x}, ${latest.y}`;
         }
       }
     }
-    
-    currentStab = d.stability?.state || "stable";
-    
-    // Update UI
-    document.getElementById("fps").textContent = d.fps || "—";
-    document.getElementById("phase").textContent = (d.phase||"STABLE").toUpperCase();
-    document.getElementById("support").textContent = (d.support||"NONE").toUpperCase();
-    document.getElementById("stability").textContent = currentStab.toUpperCase();
-    document.getElementById("stability").className = "value " + currentStab;
-    document.getElementById("margin").textContent = d.stability?.margin?.toFixed(3) || "0.000";
-    document.getElementById("footwork").textContent = d.support==="double_foot"?"PLANTED":"MOBILE";
-    document.getElementById("elbow").textContent = d.joint_angles?.left_elbow ? d.joint_angles.left_elbow.toFixed(1)+"°" : "—";
-    
-    // Show current COM position
-    if(comTrail.length > 0) {
-      const latest = comTrail[comTrail.length - 1];
-      document.getElementById("com").textContent = `${latest.x.toFixed(2)}, ${latest.y.toFixed(2)}`;
-    }
-    
-    // Show current quality %
-    document.getElementById("quality").textContent = Math.round(motionLevel * 100);
   };
 }
+
 connect();
 
-navigator.mediaDevices.getUserMedia({video:true}).then(async s => {
-  video.srcObject = s; await video.play();
-  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-  cap.width = video.videoWidth; cap.height = video.videoHeight;
-  
-  // ADAPTIVE FRAME SENDING
-  setInterval(() => { 
-    if(ws.readyState===1 && ws.bufferedAmount<50000) { 
-      capCtx.drawImage(video,0,0,cap.width,cap.height); 
-      // Use adaptive quality instead of fixed 0.5
-      cap.toBlob(b=>ws.send(b),"image/jpeg", motionLevel); 
+navigator.mediaDevices.getUserMedia({video:true})
+.then(async s => {
+  video.srcObject = s;
+  await video.play();
+
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+
+  cap.width = video.videoWidth;
+  cap.height = video.videoHeight;
+
+  setInterval(() => {
+    if(ws.readyState===1) {
+      capCtx.drawImage(video,0,0,cap.width,cap.height);
+      cap.toBlob(b => ws.send(b), "image/jpeg", 0.6);
     }
   }, 100);
-  
-  const loop = () => { render(lastPose, comTrail); requestAnimationFrame(loop); }; loop();
+
+  const loop = () => {
+    render(lastPose, comTrail);
+    requestAnimationFrame(loop);
+  };
+
+  loop();
 });
 </script>
 </body>
